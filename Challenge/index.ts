@@ -16,21 +16,18 @@ import { privateKeyToAccount } from "viem/accounts";
 import { scroll } from "viem/chains";
 import { wethAbi } from "./abi/weth-abi";
 
-/* For the 0x Challenge on Scroll, implement the following
-
-1. Display the percentage breakdown of liquidity sources
-2. Monetize your app with affiliate fees and surplus collection
-3. Display buy/sell tax for tokens with tax
-4. Display all sources of liquidity on Scroll
-
+/* Challenge modifications:
+  1. Display the percentage breakdown of liquidity sources
+  2. Monetize your app with affiliate fees and surplus collection
+  3. Display buy/sell tax for tokens with tax
+  4. Display all sources of liquidity on Scroll
 */
 
 const qs = require("qs");
 
 // load env vars
 dotenv();
-const { PRIVATE_KEY, ZERO_EX_API_KEY, ALCHEMY_HTTP_TRANSPORT_URL } =
-  process.env;
+const { PRIVATE_KEY, ZERO_EX_API_KEY, ALCHEMY_HTTP_TRANSPORT_URL } = process.env;
 
 // validate requirements
 if (!PRIVATE_KEY) throw new Error("missing PRIVATE_KEY.");
@@ -66,10 +63,33 @@ const wsteth = getContract({
   client,
 });
 
+// Function to fetch and display liquidity sources on Scroll
+const fetchLiquiditySources = async () => {
+  const response = await fetch("https://api.0x.org/swap/v1/sources?chainId=8453", {
+    headers,
+  });
+  const sourcesData = await response.json();
+  console.log("Liquidity sources for Scroll chain:");
+  sourcesData.sources.forEach((source: any) => {
+    console.log(source.name);
+  });
+};
+
+// Main function to execute swap logic
 const main = async () => {
+  // Fetch and display available liquidity sources
+  await fetchLiquiditySources();
+
   // specify sell amount
   const decimals = (await weth.read.decimals()) as number;
   const sellAmount = parseUnits("0.1", decimals);
+
+  // Define affiliate parameters for monetization
+  const affiliateParams = {
+    affiliateAddress: '0x0000000000000000000000000000000000000000', 
+    feeRecipient: '0x0000000000000000000000000000000000000000',  
+    buyTokenPercentageFee: "0.005", // 0.5% fee for monetization
+  };
 
   // 1. fetch price
   const priceParams = new URLSearchParams({
@@ -78,6 +98,11 @@ const main = async () => {
     buyToken: wsteth.address,
     sellAmount: sellAmount.toString(),
     taker: client.account.address,
+  });
+
+  // Add affiliate parameters for monetization
+  Object.entries(affiliateParams).forEach(([key, value]) => {
+    priceParams.append(key, value);
   });
 
   const priceResponse = await fetch(
@@ -95,7 +120,6 @@ const main = async () => {
   console.log("priceResponse: ", price);
 
   // 2. check if taker needs to set an allowance for Permit2
-
   if (price.issues.allowance !== null) {
     try {
       const { request } = await weth.simulate.approve([
@@ -133,6 +157,31 @@ const main = async () => {
   console.log("Fetching quote to swap 1000 WETH for wstETH");
   console.log("quoteResponse: ", quote);
 
+  // 1. Display liquidity source breakdown
+  if (quote.route && quote.route.fills) {
+    const fills = quote.route.fills;
+    console.log(`${fills.length} Sources`);
+    fills.forEach((fill) => {
+      const source = fill.source;
+      const proportion = parseInt(fill.proportionBps) / 100; // Convert basis points to percentage
+      console.log(`${source}: ${proportion}%`);
+    });
+  }
+
+  // 2. Display buy/sell tax information
+  const tokenMetadata = quote.tokenMetadata;
+  if (tokenMetadata && tokenMetadata.buyToken) {
+    const buyTax = tokenMetadata.buyToken.buyTaxBps;
+    const sellTax = tokenMetadata.sellToken.sellTaxBps;
+
+    if (buyTax > 0) {
+      console.log(`Buy Token Buy Tax: ${(buyTax / 100).toFixed(2)}%`);
+    }
+    if (sellTax > 0) {
+      console.log(`Sell Token Sell Tax: ${(sellTax / 100).toFixed(2)}%`);
+    }
+  }
+
   // 4. sign permit2.eip712 returned from quote
   let signature: Hex | undefined;
   if (quote.permit2?.eip712) {
@@ -144,7 +193,6 @@ const main = async () => {
     }
 
     // 5. append sig length and sig data to transaction.data
-
     if (signature && quote?.transaction?.data) {
       const signatureLengthInHex = numberToHex(size(signature), {
         signed: false,
@@ -160,6 +208,7 @@ const main = async () => {
       throw new Error("Failed to obtain signature or transaction data");
     }
   }
+
   // 6. submit txn with permit2 signature
   if (signature && quote.transaction.data) {
     const nonce = await client.getTransactionCount({
@@ -187,7 +236,6 @@ const main = async () => {
     });
 
     console.log("Transaction hash:", hash);
-
     console.log(`See tx details at https://scrollscan.com/tx/${hash}`);
   } else {
     console.error("Failed to obtain a signature, transaction not sent.");
